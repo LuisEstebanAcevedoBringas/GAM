@@ -100,99 +100,76 @@ class Gcn(nn.Module):
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None,
-                    act_layer=nn.SiLU, drop=0., reduction=4,
-                    use_eca=True, use_drop_path=True):
+                    act_layer=nn.GELU, drop=0., reduction=4,
+                    use_eca=True, use_dropblock=True):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or (in_features // reduction)
 
-        self.norm1 = nn.LayerNorm(in_features)
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
-        self.norm2 = nn.LayerNorm(hidden_features)
         self.fc2 = nn.Linear(hidden_features, out_features)
-        self.norm3 = nn.LayerNorm(out_features)
         self.drop = nn.Dropout(drop)
 
         self.use_eca = use_eca
+        self.use_dropblock = use_dropblock
+        if use_dropblock:
+            self.dropblock = DropBlock2D(block_size=3, drop_prob=drop)
         if use_eca:
             self.eca = ECABlock(out_features)
 
-        self.use_drop_path = use_drop_path
-        self.drop_path = DropPath(drop) if use_drop_path else nn.Identity()
-
     def forward(self, x):  # x: [B, J, C]
-        residual = x
-
-        x = self.norm1(x)
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
-
-        x = self.norm2(x)
         x = self.fc2(x)
 
-        x = self.norm3(x)
+        if self.use_dropblock:
+            x = self.dropblock(x.unsqueeze(-1).transpose(1, 2)).squeeze(-1).transpose(1, 2)
 
         if self.use_eca:
-            x = self.eca(x.transpose(1, 2)).transpose(1, 2)
-
-        x = self.drop_path(x) + residual
+            x = self.eca(x.transpose(1, 2)).transpose(1, 2)  # Correct shape for ECABlock
 
         return x
 
 
 class Mlp_ln(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None,
-                    act_layer=nn.SiLU, drop=0., reduction=4,
-                    use_eca=True, use_drop_path=True):
+                    act_layer=nn.GELU, drop=0., reduction=4,
+                    use_eca=True, use_dropblock=True):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or (in_features // reduction)
 
-        # PreNorm before Linear layers
-        self.norm1 = nn.LayerNorm(in_features)
-        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.fc1 = nn.Sequential(
+            nn.Linear(in_features, hidden_features),
+            nn.LayerNorm(hidden_features)
+        )
         self.act = act_layer()
-        self.norm2 = nn.LayerNorm(hidden_features)
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.norm3 = nn.LayerNorm(out_features)
-
-        # Dropout
+        self.fc2 = nn.Sequential(
+            nn.Linear(hidden_features, out_features),
+            nn.LayerNorm(out_features)
+        )
         self.drop = nn.Dropout(drop)
 
-        # Optional ECA attention
         self.use_eca = use_eca
+        self.use_dropblock = use_dropblock
+        if use_dropblock:
+            self.dropblock = DropBlock2D(block_size=3, drop_prob=drop)
         if use_eca:
             self.eca = ECABlock(out_features)
 
-        # Optional DropPath (instead of DropBlock)
-        self.use_drop_path = use_drop_path
-        self.drop_path = DropPath(drop) if use_drop_path else nn.Identity()
-
     def forward(self, x):  # x: [B, J, C]
-        residual = x
-
-        # MLP with PreNorm
-        x = self.norm1(x)
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
-
-        x = self.norm2(x)
         x = self.fc2(x)
-        x = self.drop(x)
 
-        x = self.norm3(x)
+        if self.use_dropblock:
+            x = self.dropblock(x.unsqueeze(-1).transpose(1, 2)).squeeze(-1).transpose(1, 2)
 
-
-        # Channel-wise attention (ECA)
         if self.use_eca:
-            x = self.eca(x.transpose(1, 2)).transpose(1, 2)
-
-        # Residual connection + DropPath
-        if x.shape == residual.shape:
-            x = residual + self.drop_path(x)
+            x = self.eca(x.transpose(1, 2)).transpose(1, 2)  # Correct shape for ECABlock
 
         return x
 
